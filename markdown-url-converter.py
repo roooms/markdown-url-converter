@@ -4,34 +4,42 @@ import sys
 import os
 from urllib.parse import urljoin
 from pathlib import Path
+from typing import List, Tuple
+import argparse
 
-def convert_markdown_urls(content: str, base_url: str) -> str:
+def convert_markdown_urls(content: str, base_url: str, file_path: Path, root_dir: Path) -> str:
     """
     Convert relative Markdown URLs to absolute URLs using the provided base URL.
     
     Args:
         content (str): Markdown content containing URLs
         base_url (str): Base URL to prepend to relative URLs
+        file_path (Path): Path to the current file being processed
+        root_dir (Path): Root directory of the documentation
         
     Returns:
         str: Markdown content with converted absolute URLs
     """
-    # Remove trailing slash from base_url if present
-    base_url = base_url.rstrip('/')
+    # Calculate the relative path from root to get the correct base URL for this file
+    rel_path = file_path.parent.relative_to(root_dir)
+    if str(rel_path) == '.':
+        current_base_url = base_url.rstrip('/')
+    else:
+        current_base_url = f"{base_url.rstrip('/')}/{rel_path}"
     
     # Regular expression patterns for different types of Markdown URLs
     patterns = [
         # [text](url) format
         (r'\[([^\]]+)\]\((?!http|#|mailto:)([^)]+)\)',
-         lambda m: f'[{m.group(1)}]({urljoin(base_url + "/", m.group(2))})'
+         lambda m: f'[{m.group(1)}]({urljoin(current_base_url + "/", m.group(2))})'
         ),
         # ![alt](image-url) format
         (r'!\[([^\]]*)\]\((?!http|#)([^)]+)\)',
-         lambda m: f'![{m.group(1)}]({urljoin(base_url + "/", m.group(2))})'
+         lambda m: f'![{m.group(1)}]({urljoin(current_base_url + "/", m.group(2))})'
         ),
         # Reference-style [text][ref] definitions
         (r'^\[([^\]]+)\]:\s*(?!http|#|mailto:)([^\s]+)(.*)$',
-         lambda m: f'[{m.group(1)}]: {urljoin(base_url + "/", m.group(2))}{m.group(3)}',
+         lambda m: f'[{m.group(1)}]: {urljoin(current_base_url + "/", m.group(2))}{m.group(3)}',
          re.MULTILINE
         )
     ]
@@ -46,47 +54,90 @@ def convert_markdown_urls(content: str, base_url: str) -> str:
     
     return result
 
-def main():
-    # Check if BASE_URL environment variable is set
-    base_url = os.environ.get('BASE_URL')
-    if not base_url:
-        print("Error: BASE_URL environment variable must be set")
-        print("Usage: BASE_URL='https://example.com' python convert_markdown_urls.py <input_file>")
-        sys.exit(1)
+def find_markdown_files(directory: Path) -> List[Path]:
+    """Find all markdown files in the directory tree."""
+    markdown_files = []
+    for ext in ['.md', '.markdown']:
+        markdown_files.extend(directory.rglob(f'*{ext}'))
+    return sorted(markdown_files)
 
-    # Check if input file is provided
-    if len(sys.argv) != 2:
-        print("Error: Please provide an input file")
-        print("Usage: BASE_URL='https://example.com' python convert_markdown_urls.py <input_file>")
-        sys.exit(1)
-
-    input_file = Path(sys.argv[1])
-    
-    # Check if input file exists
-    if not input_file.exists():
-        print(f"Error: Input file '{input_file}' not found")
-        sys.exit(1)
-
+def process_file(file_path: Path, base_url: str, root_dir: Path, dry_run: bool = False) -> Tuple[bool, str]:
+    """Process a single markdown file."""
     try:
-        # Read input file
-        with open(input_file, 'r', encoding='utf-8') as f:
+        with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        # Convert URLs
-        converted_content = convert_markdown_urls(content, base_url)
-
-        # Create output file name
-        output_file = input_file.with_stem(f"{input_file.stem}_converted")
+        converted_content = convert_markdown_urls(content, base_url, file_path, root_dir)
         
-        # Write converted content to new file
-        with open(output_file, 'w', encoding='utf-8') as f:
-            f.write(converted_content)
+        if content == converted_content:
+            return True, f"No changes needed for {file_path}"
         
-        print(f"Success: Converted content written to '{output_file}'")
-
+        if not dry_run:
+            output_file = file_path.with_stem(f"{file_path.stem}_converted")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(converted_content)
+            return True, f"Converted {file_path} -> {output_file}"
+        else:
+            return True, f"Would convert {file_path} (dry run)"
+            
     except Exception as e:
-        print(f"Error processing file: {e}")
+        return False, f"Error processing {file_path}: {e}"
+
+def main():
+    parser = argparse.ArgumentParser(description='Convert relative Markdown URLs to absolute URLs')
+    parser.add_argument('path', type=Path, help='File or directory to process')
+    parser.add_argument('--base-url', type=str, 
+                      help='Base URL for absolute links (overrides BASE_URL environment variable)')
+    parser.add_argument('--dry-run', action='store_true', 
+                      help='Show what would be done without making changes')
+    args = parser.parse_args()
+
+    # Get base URL from argument or environment
+    base_url = args.base_url or os.environ.get('BASE_URL')
+    if not base_url:
+        print("Error: BASE_URL must be provided via environment variable or --base-url argument")
+        print("Usage: BASE_URL='https://example.com' python convert_markdown_urls.py <path>")
+        print("   or: python convert_markdown_urls.py --base-url='https://example.com' <path>")
         sys.exit(1)
+
+    # Determine if input is file or directory
+    input_path = args.path.resolve()
+    if not input_path.exists():
+        print(f"Error: Path '{input_path}' not found")
+        sys.exit(1)
+
+    # Process single file or directory
+    if input_path.is_file():
+        files_to_process = [input_path]
+        root_dir = input_path.parent
+    else:
+        files_to_process = find_markdown_files(input_path)
+        root_dir = input_path
+
+    if not files_to_process:
+        print("No markdown files found to process")
+        sys.exit(0)
+
+    # Process all files
+    success_count = 0
+    error_count = 0
+    
+    print(f"Processing files with base URL: {base_url}")
+    print(f"{'DRY RUN - ' if args.dry_run else ''}Root directory: {root_dir}")
+    print("-" * 60)
+
+    for file_path in files_to_process:
+        success, message = process_file(file_path, base_url, root_dir, args.dry_run)
+        print(message)
+        if success:
+            success_count += 1
+        else:
+            error_count += 1
+
+    print("-" * 60)
+    print(f"Processed {len(files_to_process)} files:")
+    print(f"  Success: {success_count}")
+    print(f"  Errors: {error_count}")
 
 if __name__ == "__main__":
     main()
