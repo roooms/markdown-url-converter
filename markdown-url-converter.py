@@ -61,7 +61,7 @@ def find_markdown_files(directory: Path) -> List[Path]:
         markdown_files.extend(directory.rglob(f'*{ext}'))
     return sorted(markdown_files)
 
-def process_file(file_path: Path, base_url: str, root_dir: Path, dry_run: bool = False) -> Tuple[bool, str]:
+def process_file(file_path: Path, base_url: str, root_dir: Path, dry_run: bool = False, overwrite: bool = False) -> Tuple[bool, str]:
     """Process a single markdown file."""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
@@ -73,10 +73,16 @@ def process_file(file_path: Path, base_url: str, root_dir: Path, dry_run: bool =
             return True, f"No changes needed for {file_path}"
         
         if not dry_run:
-            output_file = file_path.with_stem(f"{file_path.stem}_converted")
+            if overwrite:
+                output_file = file_path
+                action = "Overwrote"
+            else:
+                output_file = file_path.with_stem(f"{file_path.stem}_converted")
+                action = "Converted"
+            
             with open(output_file, 'w', encoding='utf-8') as f:
                 f.write(converted_content)
-            return True, f"Converted {file_path} -> {output_file}"
+            return True, f"{action} {file_path}"
         else:
             return True, f"Would convert {file_path} (dry run)"
             
@@ -90,7 +96,12 @@ def main():
                       help='Base URL for absolute links (overrides BASE_URL environment variable)')
     parser.add_argument('--dry-run', action='store_true', 
                       help='Show what would be done without making changes')
+    parser.add_argument('--overwrite', action='store_true',
+                      help='Overwrite original files instead of creating new ones with _converted suffix')
     args = parser.parse_args()
+
+    if args.dry_run and args.overwrite:
+        print("Warning: --overwrite has no effect with --dry-run")
 
     # Get base URL from argument or environment
     base_url = args.base_url or os.environ.get('BASE_URL')
@@ -124,10 +135,11 @@ def main():
     
     print(f"Processing files with base URL: {base_url}")
     print(f"{'DRY RUN - ' if args.dry_run else ''}Root directory: {root_dir}")
+    print(f"Mode: {'Overwrite' if args.overwrite and not args.dry_run else 'Create new files'}")
     print("-" * 60)
 
     for file_path in files_to_process:
-        success, message = process_file(file_path, base_url, root_dir, args.dry_run)
+        success, message = process_file(file_path, base_url, root_dir, args.dry_run, args.overwrite)
         print(message)
         if success:
             success_count += 1
