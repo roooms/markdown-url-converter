@@ -7,6 +7,25 @@ from pathlib import Path
 from typing import List, Tuple
 import argparse
 
+def construct_github_url(repo: str, release: str) -> str:
+    """
+    Construct GitHub URL from repo and release information.
+    
+    Args:
+        repo (str): Repository in format "owner/repo"
+        release (str): Release tag or branch name
+        
+    Returns:
+        str: Complete GitHub base URL
+    """
+    if not repo or not release:
+        return None
+        
+    if not re.match(r'^[^/]+/[^/]+$', repo):
+        raise ValueError("Repository must be in format 'owner/repo'")
+        
+    return f"https://github.com/{repo}/blob/{release}/"
+
 def convert_markdown_urls(content: str, base_url: str, file_path: Path, root_dir: Path) -> str:
     """
     Convert relative Markdown URLs to absolute URLs using the provided base URL.
@@ -92,8 +111,16 @@ def process_file(file_path: Path, base_url: str, root_dir: Path, dry_run: bool =
 def main():
     parser = argparse.ArgumentParser(description='Convert relative Markdown URLs to absolute URLs')
     parser.add_argument('path', type=Path, help='File or directory to process')
-    parser.add_argument('--base-url', type=str, 
-                      help='Base URL for absolute links (overrides BASE_URL environment variable)')
+    
+    # URL source group (mutually exclusive)
+    url_group = parser.add_mutually_exclusive_group(required=True)
+    url_group.add_argument('--base-url', type=str, 
+                        help='Base URL for absolute links (overrides BASE_URL environment variable)')
+    url_group.add_argument('--repo', type=str,
+                        help='GitHub repository in format "owner/repo"')
+    
+    parser.add_argument('--release', type=str,
+                      help='Release tag or branch name (required when --repo is used)')
     parser.add_argument('--dry-run', action='store_true', 
                       help='Show what would be done without making changes')
     parser.add_argument('--overwrite', action='store_true',
@@ -103,13 +130,21 @@ def main():
     if args.dry_run and args.overwrite:
         print("Warning: --overwrite has no effect with --dry-run")
 
-    # Get base URL from argument or environment
-    base_url = args.base_url or os.environ.get('BASE_URL')
+    # Handle GitHub URL construction
+    if args.repo:
+        if not args.release:
+            parser.error("--release is required when using --repo")
+        try:
+            base_url = construct_github_url(args.repo, args.release)
+        except ValueError as e:
+            parser.error(str(e))
+    else:
+        # Get base URL from argument or environment
+        base_url = args.base_url or os.environ.get('BASE_URL')
+
     if not base_url:
-        print("Error: BASE_URL must be provided via environment variable or --base-url argument")
-        print("Usage: BASE_URL='https://example.com' python convert_markdown_urls.py <path>")
-        print("   or: python convert_markdown_urls.py --base-url='https://example.com' <path>")
-        sys.exit(1)
+        parser.error("BASE_URL must be provided via environment variable or --base-url argument\n" +
+                    "Or use --repo and --release to construct a GitHub URL")
 
     # Determine if input is file or directory
     input_path = args.path.resolve()
